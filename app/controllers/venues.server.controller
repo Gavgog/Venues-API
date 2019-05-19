@@ -1,0 +1,372 @@
+const Venue = require('../models/venues.server.model');
+const User = require('../models/user.server.model');
+const fs = require("fs");
+const multer = require('multer');
+
+exports.listVenues = function(req, res){
+
+    let startIndex = req.query['startIndex'];
+    let count = req.query['count'];
+    let city = req.query['city'];
+    let q = req.query['q'];
+    let categoryId = req.query['categoryId'];
+    let minStarRating = req.query['minStarRating'];
+    let maxCostRating = req.query['maxCostRating'];
+    let adminId = req.query['adminId'];
+    let sortBy = req.query['sortBy'];
+    let reverseSort = req.query['reverseSort'];
+    let myLat = req.query['mylatitude'];
+    let myLong = req.query['myLongitude'];
+    if (minStarRating > 5) return res.sendStatus(400);
+    //if (maxCostRating < 0) return res.sendStatus(400);
+    let actmax;
+    let keep = true;
+    //console.log("befor: count = " + count + ", start = " + startIndex);
+
+    Venue.getAllVenues(function(result){
+        let fullres = [];
+        let payload;
+        let venue;
+        //console.log("before: count = " + count + ", start = " + startIndex + ", Array Length = " + result.length);
+        if (startIndex === undefined) startIndex = 0;
+
+        //if (count > startIndex) return res.json([]);
+        if (count > result.length) count = result.length;
+
+        if (startIndex > result.length) startIndex = result.length;
+
+
+        if (count === undefined) count = result.length - startIndex;
+
+        if (parseInt(startIndex)+parseInt(count) > result.length) count = result.length - startIndex;
+
+        actmax = parseInt(startIndex)+parseInt(count);
+
+        //console.log("after: count = " + count + ", start = " + startIndex + ", Array Length = " + result.length);
+
+        for (let v = startIndex; v < actmax; v++){
+            venue = result[v];
+            keep = true;
+            payload = {
+                "venueId": venue.venue_id,
+                "venueName": venue.venue_name,
+                "categoryId": venue.category_id,
+                "city": venue.city,
+                "shortDescription": venue.short_description,
+                "latitude": venue.latitude,
+                "longitude": venue.longitude,
+                "meanStarRating": 0,
+                "modeCostRating": 0,
+                "primaryPhoto": venue.photo_filename,
+                "distance": 1.452
+            };
+
+            if (q !== undefined && !String(payload.venueName).toLowerCase().includes(q.toLowerCase())){
+                console.log(payload.venueName + " no contain " + q);
+                keep = false};
+
+            if (city !== undefined && !String(payload.city).toLowerCase().includes(city.toLowerCase())){
+                console.log(payload.city + " no contain " + city);
+                keep = false};
+
+
+            if (keep)fullres.push(payload);
+        }
+
+
+
+        res.json(fullres);
+
+
+    });
+};
+
+exports.read = function(req, res){
+    let id = req.params.venue_id;
+    Venue.getOne(id, function(result){
+        if (result == null) return res.sendStatus(404);
+        res.json(result);
+    });
+};
+
+exports.createVenue = async function (req, res) {
+
+    let currentdate = new Date();
+    let auth = req.get("X-Authorization");
+    let uid;
+
+    User.getIdFromToken(auth,function(err,uid){
+        if (uid == null) return res.sendStatus(401);
+
+        let venue_data = {
+            "user": uid,
+            "venueName": req.body.venueName,
+            "categoryId": req.body.categoryId,
+            "city": req.body.city,
+            "shortDescription": req.body.shortDescription,
+            "longDescription": req.body.longDescription,
+            "date":currentdate,
+            "address": req.body.address,
+            "latitude": req.body.latitude,
+            "longitude": req.body.longitude
+        };
+
+        if (auth === "" || auth === undefined)return res.sendStatus(401);
+        if (venue_data.city === "" || venue_data.city === undefined)return res.sendStatus(400);
+        if (venue_data.latitude > 90)return res.sendStatus(400);
+        if (venue_data.longitude < -180)return res.sendStatus(400);
+
+        Venue.getCategory(req.body.categoryId,function(catex) {
+            if (catex.length < 1) return res.sendStatus(400);
+
+            User.checkToken(auth, uid, function (success, otherToken) {
+
+
+                if (success == false && otherToken == false) return res.sendStatus(401);
+
+                if (success) {
+                    Venue.insert(venue_data, function (result) {
+                        res.status(201).json({"venueId": result.insertId});
+                    });
+                }
+
+            });
+        });
+    });
+};
+
+exports.update = async function (req, res) {
+
+
+    let auth = req.get('X-Authorization');
+
+    if (auth === undefined || auth === null) return res.sendStatus(401);
+
+    User.getIdFromToken(auth,function(err, id){
+
+        let venue_data = {
+            "venueName": req.body.venueName,
+            "categoryId": req.body.categoryId,
+            "city": req.body.city,
+            "shortDescription": req.body.shortDescription,
+            "longDescription": req.body.longDescription,
+            "address": req.body.address,
+            "latitude": req.body.latitude,
+            "longitude": req.body.longitude,
+            "venue_id": req.params.venue_id
+        };
+
+
+
+        let values = [
+            venue_data['venueName'],
+            venue_data['categoryId'],
+            venue_data['city'],
+            venue_data['shortDescription'],
+            venue_data['longDescription'],
+            venue_data['address'],
+            venue_data['latitude'],
+            venue_data['longitude'],
+            venue_data['venue_id']
+        ];
+        let changed = false;
+        for (let i = 0; i < values.length; i++){
+            if (values[i] !== null) changed = true;
+        }
+
+        if (changed === false) return res.sendStatus(400);
+
+        Venue.modify(values,id,function(result){
+            if (result === 403) return res.sendStatus(403);
+            if (result.changedRows !== 1) return res.sendStatus(400);
+
+            res.sendStatus(200);
+        });
+    });
+};
+// ------------------------------- Categories -------------------------------------
+
+exports.listCategories = function(req,res){//login
+    Venue.allCategories(function(result){
+
+        let final_list = [];
+
+        for (i = 0; i < result.length; i++){
+            final_list.push(  {
+                "categoryId": result[i].category_id,
+                "categoryName": result[i].category_name,
+                "categoryDescription": result[i].category_description
+            })
+        }
+
+
+
+        res.status(200).json(final_list);
+    });
+};
+
+// ------------------------------- REVIEWS -------------------------------------
+
+exports.createReview = async function (req, res) {
+
+    let xAuth = req.get('X-Authorization');
+
+    //if (req.body.reviewBody === undefined) return res.sendStatus(400);
+    if (req.body.starRating === undefined) return res.sendStatus(400);
+    if (req.body.costRating === undefined) return res.sendStatus(400);
+
+    if (req.body.starRating > 5)return res.sendStatus(400);
+    if (req.body.costRating < 0)return res.sendStatus(400);
+    if (req.body.starRating % 1 !== 0)return res.sendStatus(400);
+    if (req.body.costRating % 1 !== 0)return res.sendStatus(400);
+    if (xAuth === undefined)return res.sendStatus(401);
+
+
+    let venue_data = {
+        "reviewBody": req.body.reviewBody,
+        "starRating": req.body.starRating,
+        "costRating": req.body.costRating,
+        "venueId": req.params.venue_id
+    };
+
+    let values = [
+        venue_data['venueId'],
+        xAuth,
+        venue_data['reviewBody'],
+        venue_data['starRating'],
+        venue_data['costRating']
+    ];
+
+    Venue.newReview(values,function(result){
+        if (result === 401){return res.sendStatus(401);}
+        if (result === 403){return res.sendStatus(403);}
+        res.status(201).json(result);
+    });
+};
+
+exports.reviews = function(req, res){
+    let id = req.params.venue_id;
+    Venue.getReviews(id, function(result){
+        res.json(result);
+    });
+};
+
+// ------------------------ - - - - - - - PHOTOS - - - - - - - ------------------------------
+
+exports.addPhoto = async function (req, res) {
+    let id = req.params.venue_id;
+    let pic = req.file;
+    let desc = req.body.description;
+    let prim = req.body.makePrimary;
+    let contenttype = (req.file.originalname).split('.').pop();
+    let initfilename = req.file.filename;
+    let filename = req.file.filename + "." + contenttype;
+    write(initfilename, filename);
+
+    if (desc == null || desc === "") return res.sendStatus(400);
+    if (prim == null || (prim !== 'false' && prim !== 'true')) return res.sendStatus(400);
+
+    //let success = await write(filename, pic);
+    let auth = req.get("X-Authorization");
+    if (auth === null ||auth == undefined)return res.sendStatus(401);
+    //if (primary === null || primary == undefined || typeof(primary) !== typeof(true))return res.sendStatus(400);
+
+    User.getIdFromToken(auth,function(err,uid){
+        if (err) return res.sendStatus(401);
+        if (uid == null) return res.sendStatus(401);
+
+        Venue.getOneLite(id,function(venueDetails){
+            if (venueDetails == null) return res.sendStatus(404);
+            if (uid !== venueDetails.admin_id) return res.sendStatus(403);
+
+            //User.checkToken(auth,uid,function() {
+
+                let actprim = 0;
+                if (prim === "true")actprim = 1;
+
+                Venue.addPic(id, filename, desc, actprim, function (result) {
+                    //if (result.changedRows !== 1) return res.status(404);
+                    res.status(201).json(result);
+                });
+            //});
+        });
+    });
+};
+
+exports.getPhoto = function(req, res){
+    let file_name = req.params.photo_filename;
+    let id = req.params.venue_id;
+    let contenttype;
+
+    /*
+    if (contentType == "image/png"){
+        type = ".png"
+    } else if (contentType == "image/png"){
+        type = ".jpg"
+    } else {
+        res.sendStatus(400);
+        return;
+    }*/
+
+    Venue.picExist(file_name,function (result) {
+        Venue.getOneLite(id,function (venue) {
+            if (venue == null) return res.sendStatus(404);
+            if (result.length === 0) return res.sendStatus(404);
+
+            contenttype = file_name.split('.').pop();
+            if (contenttype == "jpg") contenttype = "jpeg";
+            contenttype = "image/"+contenttype;
+
+            let path = 'venuepics/'+file_name;
+            res.status(200).type(contenttype).sendFile(path,{root:'./'});
+
+        });
+    });
+
+
+};
+
+exports.removePhoto = function(req, res){
+
+    let vid = req.params.venue_id;
+    let fname = req.params.photo_filename;
+
+    let auth = req.get("X-Authorization");
+    if (auth === null ||auth === undefined)return res.sendStatus(401);
+    Venue.getOneLite(vid,function(venue){
+
+        User.checkToken(auth,venue.admin_id,function(success,forbidden) {
+            if(forbidden)return res.sendStatus(403);
+            if(!success) return res.sendStatus(402);
+            Venue.picExist(fname,function(venuePic){
+                if (venuePic.length === 0)return res.sendStatus(404);
+
+                //if (venuePic[0].venue_id != vid)console.log(venuePic[0].venue_id + "!==" + vid);
+                if (venuePic[0].venue_id != vid)return res.sendStatus(404);
+                Venue.deletePic([vid, fname], function (result) {
+                    res.json(result);
+                });
+            });
+        });
+    });
+};
+
+exports.setPrimary = function(req, res){
+    let id = req.params.venue_id;
+    let fname = req.params.photo_filename;
+    Venue.makePrimary([id,id, fname], function(result){
+        res.json(result);
+    });
+};
+
+async function getName(id){
+    let result = (Math.round(Math.random() * 10000)).toString() + id;
+    return result.toString() + ".jpg";
+}
+
+
+function write(initFilename,filename){
+    fs.rename("venuepics/"+initFilename, "venuepics/"+filename, (err) => {
+        if (err) throw err;
+    });
+}
